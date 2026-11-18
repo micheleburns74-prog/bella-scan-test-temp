@@ -1,0 +1,81 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Scanner Test</title>
+<style>body{font:16px -apple-system,system-ui,sans-serif;margin:16px;color:#222;max-width:640px}
+h1{font-size:22px}h2{font-size:17px;margin:22px 0 6px;border-top:1px solid #ddd;padding-top:14px}
+button{font-size:16px;padding:11px 14px;margin:4px 6px 4px 0;border:1.5px solid #b5617f;border-radius:10px;background:#fff;color:#0a66d6}
+pre{background:#f4f2f3;padding:10px;border-radius:10px;white-space:pre-wrap;word-break:break-word;min-height:1.2em}
+video{width:100%;max-height:50vh;background:#000;border-radius:12px;display:none}
+input{font-size:18px;padding:10px;width:60%;border:1.5px solid #888;border-radius:10px}
+.ok{color:#0a7a2f}.bad{color:#b3261e}</style></head><body>
+<h1>Scanner Test</h1><p>Disposable. Fictional data only. Not the real app.</p>
+<h2>1. Environment</h2><pre id="env">checking...</pre>
+<h2>2. Camera permission and rear camera</h2>
+<button id="cam">Start camera</button><button id="stop">Stop camera</button>
+<pre id="camres"></pre>
+<h2>3. Live preview</h2><video id="v" playsinline muted autoplay></video><pre id="prev"></pre>
+<h2>4. Barcode detection (UPC-A and EAN-13)</h2>
+<p>Point the camera at a product barcode. Hold steady about 6 to 8 inches away.</p>
+<pre id="det">Waiting for camera.</pre>
+<h2>5. Numbers found</h2><pre id="found">None yet.</pre>
+<h2>Decoder self-test (no camera needed)</h2>
+<button id="self">Run decoder self-test</button><pre id="selfres"></pre>
+<h2>Manual entry (always works)</h2>
+<input id="man" inputmode="numeric" placeholder="Type barcode number"><button id="mgo">Check</button><pre id="mres"></pre>
+<h2>Report</h2><button id="rep">Make results text</button><pre id="repres"></pre>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);const R={log:[]};const L=(k,v)=>{R[k]=v};
+window.addEventListener('error',e=>{R.jsError=(R.jsError||'')+e.message+' | '});
+window.addEventListener('unhandledrejection',e=>{R.jsError=(R.jsError||'')+String(e.reason)+' | '});
+function digitsOK(s){s=s.replace(/\D/g,'');if(s.length===12)s='0'+s;if(s.length!==13)return{n:s,ok:false};let t=0;for(let i=0;i<12;i++)t+=(+s[i])*(i%2?3:1);return{n:s,ok:((10-t%10)%10)===+s[12]}}
+// 1 environment
+const env={secure:window.isSecureContext,https:location.protocol==='https:',origin:location.origin,
+ mediaDevices:!!(navigator.mediaDevices),getUserMedia:!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia),
+ barcodeDetector:'BarcodeDetector' in window,zxingLoaded:typeof ZXing!=='undefined',ua:navigator.userAgent};
+L('env',env);$('env').textContent=JSON.stringify(env,null,1);
+if(!env.secure)$('env').textContent+='\n\nNOT SECURE: iPhone Safari will not allow the camera on this address. The page needs https.';
+// camera
+let stream=null,timer=null,det=null,last={code:'',t:0},found=[],busy=false;
+function stopCam(){clearInterval(timer);timer=null;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('v');v.srcObject=null;v.style.display='none';$('camres').textContent+='\nCamera stopped.'}
+$('stop').onclick=stopCam;addEventListener('pagehide',stopCam);document.addEventListener('visibilitychange',()=>{if(document.hidden&&stream)stopCam()});
+$('cam').onclick=async()=>{const o=$('camres');o.textContent='';
+ if(!env.getUserMedia){o.textContent='Camera API not available here. '+(env.secure?'':'Reason: page is not https.');L('cam','api unavailable');return}
+ try{o.textContent='Asking for camera permission...';
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+  const tr=stream.getVideoTracks()[0];const s=tr.getSettings?tr.getSettings():{};
+  try{const c=tr.getCapabilities?tr.getCapabilities():{};if(c.focusMode&&c.focusMode.includes('continuous'))await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
+  const rear=/back|rear|environment/i.test(tr.label)||s.facingMode==='environment';
+  o.textContent='Permission: GRANTED\nCamera: '+tr.label+'\nFacing: '+(s.facingMode||'unknown')+'\nRear camera: '+(rear?'yes':'not confirmed')+'\nResolution: '+s.width+'x'+s.height;
+  L('cam',{granted:true,label:tr.label,facing:s.facingMode,rear,w:s.width,h:s.height});
+  const v=$('v');v.srcObject=stream;v.style.display='block';await v.play();
+  await new Promise(r=>{if(v.videoWidth)r();else v.onloadedmetadata=r});
+  $('prev').textContent='Preview running: '+v.videoWidth+'x'+v.videoHeight+'. Do you see the camera picture above?';L('preview',v.videoWidth+'x'+v.videoHeight);
+  startDetect(v);
+ }catch(e){const n=e&&e.name;L('cam',{error:String(e)});
+  o.textContent=n==='NotAllowedError'?'Camera permission was DENIED. Go to iPhone Settings > Safari > Camera (or tap the AA button in the address bar > Website Settings > Camera) and choose Allow, then reload. You can still type the barcode below.':n==='NotFoundError'?'No camera found.':n==='NotReadableError'?'Camera is busy in another app. Close it and try again.':'Camera error: '+e}};
+function addCode(txt,fmt){const now=Date.now();if(txt===last.code&&now-last.t<4000){last.t=now;return}last={code:txt,t:now};
+ const c=digitsOK(txt);found.unshift(txt+'  ('+fmt+')  standard: '+c.n+'  check digit '+(c.ok?'valid':'NOT valid'));if(navigator.vibrate)navigator.vibrate(60);
+ $('found').textContent=found.slice(0,8).join('\n');$('det').textContent='READ: '+txt+' ('+fmt+')';L('found',found.slice(0,5))}
+async function startDetect(v){
+ if('BarcodeDetector' in window){try{det=new BarcodeDetector({formats:['ean_13','upc_a','ean_8','upc_e']});$('det').textContent='Using built-in detector. Looking...';
+   timer=setInterval(async()=>{if(busy)return;busy=true;try{const r=await det.detect(v);if(r.length)addCode(r[0].rawValue,r[0].format)}catch(e){}busy=false},250);L('decoder','BarcodeDetector');return}catch(e){}}
+ if(typeof ZXing==='undefined'){$('det').textContent='Decoder library did not load (needs internet on the phone).';L('decoder','zxing not loaded');return}
+ const hints=new Map();hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.UPC_E]);hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+ const mr=new ZXing.MultiFormatReader();mr.setHints(hints);const cv=document.createElement('canvas');const g=cv.getContext('2d',{willReadFrequently:true});
+ $('det').textContent='Using ZXing decoder. Looking...';L('decoder','ZXing');
+ timer=setInterval(()=>{if(busy||!v.videoWidth)return;busy=true;try{const sc=Math.min(1,1000/v.videoWidth);cv.width=Math.round(v.videoWidth*sc);cv.height=Math.round(v.videoHeight*sc);g.drawImage(v,0,0,cv.width,cv.height);
+   const bm=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(cv)));const r=mr.decode(bm);addCode(r.getText(),ZXing.BarcodeFormat[r.getBarcodeFormat()])}catch(e){}busy=false},220)}
+// self test
+$('self').onclick=async()=>{const o=$('selfres');if(typeof ZXing==='undefined'){o.textContent='ZXing did not load.';return}
+ const tests=[['2000000000145','EAN-13'],['012345678905','UPC-A']];const out=[];
+ for(const [num] of tests){const c=document.createElement('canvas');c.width=460;c.height=260;const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,460,260);
+  const pat=ean(num.length===12?'0'+num:num);let x=30;g.fillStyle='#000';for(const b of pat){if(b.dark)g.fillRect(x,20,b.w*3,180);x+=b.w*3}
+  try{const r=await new ZXing.BrowserMultiFormatReader().decodeFromImageUrl(c.toDataURL());out.push(num+' -> read '+r.getText()+' as '+ZXing.BarcodeFormat[r.getBarcodeFormat()]+' OK')}catch(e){out.push(num+' -> FAILED '+e)}}
+ o.textContent=out.join('\n');L('selftest',out)};
+function ean(d){const L_=['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'];const G=['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'];const R_=['1110010','1100110','1101100','1000010','1011100','1001110','1010000','1000100','1001000','1110100'];
+ const P=['LLLLLL','LLGLGG','LLGGLG','LLGGGL','LGLLGG','LGGLLG','LGGGLL','LGLGLG','LGLGGL','LGGLGL'];const f=+d[0];let s='101';for(let i=1;i<7;i++){s+=(P[f][i-1]==='L'?L_:G)[+d[i]]}s+='01010';for(let i=7;i<13;i++)s+=R_[+d[i]];s+='101';
+ const out=[];let i=0;while(i<s.length){let j=i;while(j<s.length&&s[j]===s[i])j++;out.push({dark:s[i]==='1',w:j-i});i=j}return out}
+$('mgo').onclick=()=>{const c=digitsOK($('man').value);$('mres').textContent='Standard form: '+c.n+'\nCheck digit: '+(c.ok?'valid':'NOT valid')};
+$('rep').onclick=()=>{$('repres').textContent=JSON.stringify(R,null,1)};
+</script></body></html>
