@@ -1,0 +1,82 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Bag Test"><meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="home_manifest.webmanifest">
+<title>Bag Test</title>
+<style>body{font:16px -apple-system,system-ui,sans-serif;margin:16px;color:#222;max-width:640px;padding-top:env(safe-area-inset-top)}
+h1{font-size:22px}h2{font-size:17px;margin:22px 0 6px;border-top:1px solid #ddd;padding-top:14px}
+button{font-size:16px;padding:11px 14px;margin:4px 6px 4px 0;border:1.5px solid #b5617f;border-radius:10px;background:#fff;color:#0a66d6}
+pre{background:#f4f2f3;padding:10px;border-radius:10px;white-space:pre-wrap;word-break:break-word;min-height:1.2em}
+video{width:100%;max-height:50vh;background:#000;border-radius:12px;display:none}
+input{font-size:18px;padding:10px;width:60%;border:1.5px solid #888;border-radius:10px}</style></head><body>
+<h1>Bag Test</h1><p>Disposable test. Fictional data only. Not the real app. Everything stays on this phone.</p>
+<h2>1. Where am I running?</h2><pre id="mode">checking...</pre>
+<h2>2. What is saved on this phone</h2><pre id="state">loading...</pre>
+<button id="add">Save a test item</button><button id="refresh">Refresh</button>
+<h2>3. Saved test bag</h2><pre id="bag"></pre>
+<h2>4. Scanner (scanned numbers are saved automatically)</h2>
+<button id="cam">Start camera</button><button id="stop">Stop camera</button>
+<pre id="camres"></pre><video id="v" playsinline muted autoplay></video><pre id="det">Waiting for camera.</pre>
+<h2>5. Manual entry</h2><input id="man" inputmode="numeric" placeholder="Type barcode number"><button id="mgo">Check and save</button><pre id="mres"></pre>
+<h2>6. Backup (export)</h2><button id="exp">Show my bag as text</button><pre id="expres"></pre>
+<script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+function digitsOK(s){s=s.replace(/\D/g,'');if(s.length===12)s='0'+s;if(s.length!==13)return{n:s,ok:false};let t=0;for(let i=0;i<12;i++)t+=(+s[i])*(i%2?3:1);return{n:s,ok:((10-t%10)%10)===+s[12]}}
+const LS='bagtest_v1';
+function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'null')}catch(e){return null}}
+function lsSet(o){try{localStorage.setItem(LS,JSON.stringify(o));return true}catch(e){return false}}
+function idb(){return new Promise((res,rej)=>{const r=indexedDB.open('bagtest',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+async function idbGet(){try{const d=await idb();return await new Promise((res,rej)=>{const q=d.transaction('kv').objectStore('kv').get('data');q.onsuccess=()=>res(q.result||null);q.onerror=()=>rej(q.error)})}catch(e){return null}}
+async function idbSet(o){try{const d=await idb();return await new Promise((res,rej)=>{const t=d.transaction('kv','readwrite');t.objectStore('kv').put(o,'data');t.oncomplete=()=>res(true);t.onerror=()=>rej(t.error)})}catch(e){return false}}
+const standalone=(navigator.standalone===true)||matchMedia('(display-mode: standalone)').matches;
+let cur=null;
+async function load(){const a=lsGet(),b=await idbGet();return {ls:a,idb:b}}
+async function save(o){o.updated=new Date().toLocaleString();const x=lsSet(o),y=await idbSet(o);return {ls:x,idb:y}}
+async function boot(){
+ let {ls,idb:ib}=await load();const lost={ls:!ls,idb:!ib};
+ let d=ib||ls;const firstEver=!d;
+ if(!d)d={firstSeen:new Date().toLocaleString(),launches:0,launchLog:[],items:[]};
+ d.launches++;d.launchLog.push((standalone?'HOME SCREEN':'SAFARI')+' '+new Date().toLocaleString());d.launchLog=d.launchLog.slice(-8);
+ cur=d;await save(d);window.__lost=lost;window.__first=firstEver;render(lost,firstEver)}
+async function render(lost,firstEver){
+ $('mode').textContent='Opened from: '+(standalone?'HOME SCREEN (app mode)':'Safari browser tab')+'\nSecure https: '+(window.isSecureContext?'yes':'NO');
+ let p='?',q='?';try{p=navigator.storage&&navigator.storage.persisted?await navigator.storage.persisted():'n/a';}catch(e){}
+ try{const e=await navigator.storage.estimate();q=Math.round((e.usage||0)/1024)+' KB used of about '+Math.round((e.quota||0)/1048576)+' MB'}catch(e){}
+ const x=await load();
+ $('state').textContent=(firstEver?'FIRST TIME on this phone (nothing was saved before).':'Found data saved earlier on this phone: YES')+'\n'
+  +'Short-term store (localStorage): '+(lost.ls?'EMPTY at open':'had data at open')+'\n'
+  +'Long-term store (IndexedDB): '+(lost.idb?'EMPTY at open':'had data at open')+'\n'
+  +'First saved: '+cur.firstSeen+'\nOpened '+cur.launches+' time(s) in total\nLast opens:\n  '+cur.launchLog.join('\n  ')+'\n'
+  +'Items saved: '+cur.items.length+' (now stored in localStorage: '+(x.ls?x.ls.items.length:'none')+', IndexedDB: '+(x.idb?x.idb.items.length:'none')+')\n'
+  +'Browser says storage is protected: '+p+'\nSpace: '+q;
+ $('bag').textContent=cur.items.length?cur.items.map((i,n)=>(n+1)+'. '+i.name+'  ['+i.at+']').join('\n'):'No items yet. Tap "Save a test item".'}
+async function addItem(name){cur.items.push({name,at:new Date().toLocaleString()});const r=await save(cur);await render(window.__lost,false);return r}
+$('add').onclick=async()=>{const r=await addItem('Test item '+(cur.items.length+1));if(!r.ls||!r.idb)alert('Save problem: '+JSON.stringify(r))};
+$('refresh').onclick=async()=>{const x=await load();cur=x.idb||x.ls||cur;await render({ls:!x.ls,idb:!x.idb},false)};
+$('exp').onclick=()=>{$('expres').textContent=JSON.stringify(cur,null,1)};
+$('mgo').onclick=async()=>{const c=digitsOK($('man').value);if(!c.ok){$('mres').textContent='Not a valid barcode number (check digit failed): '+c.n;return}await addItem('Manual '+c.n);$('mres').textContent='Saved '+c.n};
+let stream=null,timer=null,last={code:'',t:0},busy=false;
+function stopCam(){clearInterval(timer);timer=null;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('v');v.srcObject=null;v.style.display='none';$('camres').textContent+='\nCamera stopped.'}
+$('stop').onclick=stopCam;addEventListener('pagehide',()=>{if(stream)stopCam()});document.addEventListener('visibilitychange',()=>{if(document.hidden&&stream)stopCam()});
+$('cam').onclick=async()=>{const o=$('camres');o.textContent='';
+ if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){o.textContent='Camera not available here.';return}
+ try{o.textContent='Asking for camera permission...';
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
+  const tr=stream.getVideoTracks()[0];
+  try{const c=tr.getCapabilities?tr.getCapabilities():{};if(c.focusMode&&c.focusMode.includes('continuous'))await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
+  o.textContent='Permission: GRANTED\nCamera: '+tr.label;
+  const v=$('v');v.srcObject=stream;v.style.display='block';await v.play();await new Promise(r=>{if(v.videoWidth)r();else v.onloadedmetadata=r});startDetect(v);
+ }catch(e){const n=e&&e.name;o.textContent=n==='NotAllowedError'?'Camera permission was DENIED. Go to iPhone Settings > Apps > Safari > Camera (or for the Home Screen app, Settings > Apps > the app name) and allow it. You can still type the barcode.':n==='NotFoundError'?'No camera found.':n==='NotReadableError'?'Camera is busy in another app.':'Camera error: '+e}};
+async function addCode(txt,fmt){const now=Date.now();if(txt===last.code&&now-last.t<4000){last.t=now;return}last={code:txt,t:now};
+ const c=digitsOK(txt);if(navigator.vibrate)navigator.vibrate(60);$('det').textContent='READ: '+txt+' ('+fmt+') check digit '+(c.ok?'valid':'NOT valid')+(c.ok?'\nSaved to the bag.':'');if(c.ok)await addItem('Scanned '+c.n)}
+function startDetect(v){
+ if(typeof ZXing==='undefined'){$('det').textContent='Decoder did not load (needs internet).';return}
+ const hints=new Map();hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.UPC_E]);hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+ const mr=new ZXing.MultiFormatReader();mr.setHints(hints);const cv=document.createElement('canvas');const g=cv.getContext('2d',{willReadFrequently:true});
+ $('det').textContent='Looking for a barcode...';
+ timer=setInterval(()=>{if(busy||!v.videoWidth)return;busy=true;try{const sc=Math.min(1,1000/v.videoWidth);cv.width=Math.round(v.videoWidth*sc);cv.height=Math.round(v.videoHeight*sc);g.drawImage(v,0,0,cv.width,cv.height);
+  const bm=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(cv)));const r=mr.decode(bm);addCode(r.getText(),ZXing.BarcodeFormat[r.getBarcodeFormat()])}catch(e){}busy=false},220)}
+boot();
+</script></body></html>
