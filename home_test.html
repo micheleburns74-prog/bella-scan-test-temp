@@ -7,76 +7,218 @@
 <style>body{font:16px -apple-system,system-ui,sans-serif;margin:16px;color:#222;max-width:640px;padding-top:env(safe-area-inset-top)}
 h1{font-size:22px}h2{font-size:17px;margin:22px 0 6px;border-top:1px solid #ddd;padding-top:14px}
 button{font-size:16px;padding:11px 14px;margin:4px 6px 4px 0;border:1.5px solid #b5617f;border-radius:10px;background:#fff;color:#0a66d6}
+button.big{font-size:19px;padding:14px 18px;background:#b5617f;color:#fff;border-color:#b5617f}
 pre{background:#f4f2f3;padding:10px;border-radius:10px;white-space:pre-wrap;word-break:break-word;min-height:1.2em}
+textarea{width:100%;box-sizing:border-box;height:120px;font:12px ui-monospace,Menlo,monospace;border:1.5px solid #888;border-radius:10px;padding:8px}
 video{width:100%;max-height:50vh;background:#000;border-radius:12px;display:none}
-input{font-size:18px;padding:10px;width:60%;border:1.5px solid #888;border-radius:10px}</style></head><body>
-<h1>Bag Test</h1><p>Disposable test. Fictional data only. Not the real app. Everything stays on this phone.</p>
-<h2>1. Where am I running?</h2><pre id="mode">checking...</pre>
-<h2>2. What is saved on this phone</h2><pre id="state">loading...</pre>
-<button id="add">Save a test item</button><button id="refresh">Refresh</button>
-<h2>3. Saved test bag</h2><pre id="bag"></pre>
-<h2>4. Scanner (scanned numbers are saved automatically)</h2>
+input{font-size:18px;padding:10px;width:60%;border:1.5px solid #888;border-radius:10px}
+table{border-collapse:collapse;width:100%}td{padding:6px 4px;border-bottom:1px solid #e5e5e5;vertical-align:top;font-size:15px}
+.PASS{color:#0a7a2f;font-weight:700}.FAIL{color:#b3261e;font-weight:700}.NT{color:#8a6d00;font-weight:700}
+.card{background:#fff4e5;border:1.5px solid #e0a040;border-radius:12px;padding:12px;margin:12px 0}
+.small{font-size:13px;color:#555}</style></head><body>
+<h1>Bag Test</h1>
+<p class="small">Disposable test. Fictional data only. Not the real app. Everything stays on this phone. Page version 2.</p>
+<div id="cards"></div>
+<h2>Results summary</h2>
+<table id="sum"><tr><td>Running checks...</td></tr></table>
+<p><button class="big" id="copy">Copy report</button><button id="again">Run checks again</button></p>
+<p class="small" id="copymsg"></p>
+<textarea id="rep" readonly placeholder="The report appears here after you tap Copy report."></textarea>
+<h2>Saved test bag</h2><pre id="bag"></pre>
+<button id="add">Save a test item</button>
+<h2>Scanner (optional)</h2>
+<p class="small">Scan one product. The page waits until it has read the same number several times, then asks you to confirm it.</p>
 <button id="cam">Start camera</button><button id="stop">Stop camera</button>
 <pre id="camres"></pre><video id="v" playsinline muted autoplay></video><pre id="det">Waiting for camera.</pre>
-<h2>5. Manual entry</h2><input id="man" inputmode="numeric" placeholder="Type barcode number"><button id="mgo">Check and save</button><pre id="mres"></pre>
-<h2>6. Backup (export)</h2><button id="exp">Show my bag as text</button><pre id="expres"></pre>
+<div id="confirm"></div>
+<pre id="reads"></pre>
+<h2>Manual entry</h2><input id="man" inputmode="numeric" placeholder="Type barcode number"><button id="mgo">Check and save</button><pre id="mres"></pre>
+<h2>Backup and restore</h2>
+<button id="bkfill">Show my bag as backup text</button><button id="bkgo">Restore from text below</button>
+<textarea id="bk" placeholder="Backup text appears here. To restore, paste a backup here and tap Restore."></textarea><pre id="bkres"></pre>
 <script src="https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script>
 const $=id=>document.getElementById(id);
-function digitsOK(s){s=s.replace(/\D/g,'');if(s.length===12)s='0'+s;if(s.length!==13)return{n:s,ok:false};let t=0;for(let i=0;i<12;i++)t+=(+s[i])*(i%2?3:1);return{n:s,ok:((10-t%10)%10)===+s[12]}}
-const LS='bagtest_v1';
-function lsGet(){try{return JSON.parse(localStorage.getItem(LS)||'null')}catch(e){return null}}
-function lsSet(o){try{localStorage.setItem(LS,JSON.stringify(o));return true}catch(e){return false}}
-function idb(){return new Promise((res,rej)=>{const r=indexedDB.open('bagtest',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
-async function idbGet(){try{const d=await idb();return await new Promise((res,rej)=>{const q=d.transaction('kv').objectStore('kv').get('data');q.onsuccess=()=>res(q.result||null);q.onerror=()=>rej(q.error)})}catch(e){return null}}
-async function idbSet(o){try{const d=await idb();return await new Promise((res,rej)=>{const t=d.transaction('kv','readwrite');t.objectStore('kv').put(o,'data');t.oncomplete=()=>res(true);t.onerror=()=>rej(t.error)})}catch(e){return false}}
+const VER='v2-2026-11-18';
+const LSK='bagtest_v1',SNAPK='bagtest_v1_pre_v2_snapshot';
+const now=()=>Date.now(),fmt=t=>new Date(t).toLocaleString();
+function hash(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return(h>>>0).toString(16)}
+const itemsHash=a=>hash(JSON.stringify((a||[]).map(i=>[i.name,i.at])));
+// ---------- storage (same keys as version 1, so earlier saved items are found) ----------
+function lsRead(k){try{return JSON.parse(localStorage.getItem(k)||'null')}catch(e){return null}}
+function lsWrite(k,o){try{localStorage.setItem(k,JSON.stringify(o));return true}catch(e){return false}}
+function idbOpen(){return new Promise((res,rej)=>{const r=indexedDB.open('bagtest',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
+async function idbRead(k){try{const d=await idbOpen();return await new Promise((res,rej)=>{const q=d.transaction('kv').objectStore('kv').get(k);q.onsuccess=()=>res(q.result||null);q.onerror=()=>rej(q.error)})}catch(e){return null}}
+async function idbWrite(k,o){try{const d=await idbOpen();return await new Promise((res,rej)=>{const t=d.transaction('kv','readwrite');t.objectStore('kv').put(o,k);t.oncomplete=()=>res(true);t.onerror=()=>rej(t.error)})}catch(e){return false}}
+function pick(a,b){if(!a)return b;if(!b)return a;const la=(a.items||[]).length,lb=(b.items||[]).length;if(la!==lb)return la>lb?a:b;return(a.launches||0)>=(b.launches||0)?a:b}
+// ---------- barcode helpers ----------
+function gtin(s){s=String(s).replace(/\D/g,'');if(![8,12,13].includes(s.length))return{n:s,ok:false};let t=0;const L=s.length-1;for(let i=0;i<L;i++)t+=(+s[i])*(((L-i)%2)?3:1);return{n:s.length===12?'0'+s:s,ok:((10-t%10)%10)===+s[L]}}
+// Misread guard: a number is only accepted after the SAME number is read several times in a short window,
+// and clearly more often than any other number. A check digit alone is not proof (about 1 wrong read in 10 passes it by chance).
+const WIN=2500,NEED=3;
+function makeConsensus(){const buf=[];return{
+ push(code,t){buf.push({c:code,t});while(buf.length&&t-buf[0].t>WIN)buf.shift();return this.eval()},
+ eval(){const cnt={};buf.forEach(r=>cnt[r.c]=(cnt[r.c]||0)+1);const arr=Object.entries(cnt).sort((a,b)=>b[1]-a[1]);
+  if(!arr.length)return{state:'none'};const n=arr[0][1],n2=arr[1]?arr[1][1]:0;
+  if(n>=NEED&&n>=2*n2)return{state:'accept',code:arr[0][0],n,others:arr.slice(1)};
+  if(n2>=2)return{state:'unclear',top:arr.slice(0,2)};
+  return{state:'waiting',code:arr[0][0],n}},
+ reset(){buf.length=0}}}
+function consensusTests(){const out=[];
+ function run(name,seq,want){const c=makeConsensus();let r={state:'none'};seq.forEach(([code,t])=>{r=c.push(code,t)});const got=r.state==='accept'?r.code:r.state;out.push({name,ok:got===want,got,want})}
+ const A='9780743237963',B='4184744237963';
+ run('Same number read 3 times is accepted',[[A,0],[A,200],[A,400]],A);
+ run('One wrong read among good reads is ignored (the real iPhone case)',[[A,0],[B,200],[A,400],[A,600]],A);
+ run('A wrong read seen only once is never accepted',[[B,0]],'waiting');
+ run('Two different numbers alternating is not accepted',[[A,0],[B,200],[A,400],[B,600]],'unclear');
+ run('Two numbers each read 3 times is not accepted',[[A,0],[A,100],[A,200],[B,300],[B,400],[B,500]],'unclear');
+ run('Old reads expire (reads 5 seconds apart do not add up)',[[A,0],[A,2600],[A,5200]],'waiting');
+ return out}
+// ---------- backup text ----------
+function exportText(items){return JSON.stringify({bagtest:1,exported:fmt(now()),items:(items||[]).map(i=>({name:i.name,at:i.at}))},null,1)}
+function importMerge(cur,text){let o;try{o=JSON.parse(text)}catch(e){return{ok:false,err:'Not valid backup text'}}
+ if(!o||o.bagtest!==1||!Array.isArray(o.items))return{ok:false,err:'This is not a Bag Test backup'};
+ const seen=new Set(cur.map(i=>i.name+'|'+i.at));let added=0;const out=cur.slice();
+ o.items.forEach(i=>{if(i&&typeof i.name==='string'&&typeof i.at==='string'&&!seen.has(i.name+'|'+i.at)){out.push({name:i.name.slice(0,200),at:i.at.slice(0,60)});seen.add(i.name+'|'+i.at);added++}});
+ return{ok:true,items:out,added}}
+// ---------- state ----------
 const standalone=(navigator.standalone===true)||matchMedia('(display-mode: standalone)').matches;
-let cur=null;
-async function load(){const a=lsGet(),b=await idbGet();return {ls:a,idb:b}}
-async function save(o){o.updated=new Date().toLocaleString();const x=lsSet(o),y=await idbSet(o);return {ls:x,idb:y}}
+let D=null,X={},session={seen:{},accepted:null};
+function ev(type,detail){D.events=D.events||[];D.events.push({t:now(),at:fmt(now()),type,detail:detail===undefined?null:detail});if(D.events.length>300)D.events=D.events.slice(-300)}
+async function saveAll(){D.updated=fmt(now());D.lastSaved={count:D.items.length,hash:itemsHash(D.items),ts:now()};
+ const a=lsWrite(LSK,D),b=await idbWrite('data',D);const rb=lsRead(LSK),rb2=await idbRead('data');
+ X.writeOK=!!(a&&b&&rb&&rb2&&rb.items.length===D.items.length&&rb2.items.length===D.items.length);return X.writeOK}
 async function boot(){
- let {ls,idb:ib}=await load();const lost={ls:!ls,idb:!ib};
- let d=ib||ls;const firstEver=!d;
- if(!d)d={firstSeen:new Date().toLocaleString(),launches:0,launchLog:[],items:[]};
- d.launches++;d.launchLog.push((standalone?'HOME SCREEN':'SAFARI')+' '+new Date().toLocaleString());d.launchLog=d.launchLog.slice(-8);
- cur=d;await save(d);window.__lost=lost;window.__first=firstEver;render(lost,firstEver)}
-async function render(lost,firstEver){
- $('mode').textContent='Opened from: '+(standalone?'HOME SCREEN (app mode)':'Safari browser tab')+'\nSecure https: '+(window.isSecureContext?'yes':'NO');
- let p='?',q='?';try{p=navigator.storage&&navigator.storage.persisted?await navigator.storage.persisted():'n/a';}catch(e){}
- try{const e=await navigator.storage.estimate();q=Math.round((e.usage||0)/1024)+' KB used of about '+Math.round((e.quota||0)/1048576)+' MB'}catch(e){}
- const x=await load();
- $('state').textContent=(firstEver?'FIRST TIME on this phone (nothing was saved before).':'Found data saved earlier on this phone: YES')+'\n'
-  +'Short-term store (localStorage): '+(lost.ls?'EMPTY at open':'had data at open')+'\n'
-  +'Long-term store (IndexedDB): '+(lost.idb?'EMPTY at open':'had data at open')+'\n'
-  +'First saved: '+cur.firstSeen+'\nOpened '+cur.launches+' time(s) in total\nLast opens:\n  '+cur.launchLog.join('\n  ')+'\n'
-  +'Items saved: '+cur.items.length+' (now stored in localStorage: '+(x.ls?x.ls.items.length:'none')+', IndexedDB: '+(x.idb?x.idb.items.length:'none')+')\n'
-  +'Browser says storage is protected: '+p+'\nSpace: '+q;
- $('bag').textContent=cur.items.length?cur.items.map((i,n)=>(n+1)+'. '+i.name+'  ['+i.at+']').join('\n'):'No items yet. Tap "Save a test item".'}
-async function addItem(name){cur.items.push({name,at:new Date().toLocaleString()});const r=await save(cur);await render(window.__lost,false);return r}
-$('add').onclick=async()=>{const r=await addItem('Test item '+(cur.items.length+1));if(!r.ls||!r.idb)alert('Save problem: '+JSON.stringify(r))};
-$('refresh').onclick=async()=>{const x=await load();cur=x.idb||x.ls||cur;await render({ls:!x.ls,idb:!x.idb},false)};
-$('exp').onclick=()=>{$('expres').textContent=JSON.stringify(cur,null,1)};
-$('mgo').onclick=async()=>{const c=digitsOK($('man').value);if(!c.ok){$('mres').textContent='Not a valid barcode number (check digit failed): '+c.n;return}await addItem('Manual '+c.n);$('mres').textContent='Saved '+c.n};
-let stream=null,timer=null,last={code:'',t:0},busy=false;
+ const t0=now();const a=lsRead(LSK),b=await idbRead('data');
+ X.lsHad=!!a;X.idbHad=!!b;D=pick(a,b);X.fresh=!D;
+ if(!D){const sn=lsRead(SNAPK)||await idbRead('snapshot_pre_v2');
+  if(sn&&sn.data&&Array.isArray(sn.data.items)){D=JSON.parse(JSON.stringify(sn.data));D.ver=2;X.fresh=false;X.restoredFromSnapshot=true;D.events=D.events||[];D.events.push({t:t0,at:fmt(t0),type:'restored-from-safety-copy',detail:{items:D.items.length}})}}
+ if(!D)D={firstSeen:fmt(t0),firstSeenTs:t0,launches:0,launchLog:[],items:[],events:[],flags:{}};
+ D.events=D.events||[];D.flags=D.flags||{};D.launchLog=D.launchLog||[];D.restartEvidence=D.restartEvidence||[];
+ if(a&&b){X.agree=itemsHash(a.items)===itemsHash(b.items);if(!X.agree)ev('stores-disagree',{ls:a.items.length,idb:b.items.length})}
+ else if(a||b){X.agree=null;ev(a?'recovered-idb-from-ls':'recovered-ls-from-idb',{items:D.items.length})}
+ X.migrated=false;
+ if(!X.fresh&&!D.ver){ // first run of version 2 over version 1 data: keep a safety copy of exactly what was there
+  const snap={taken:fmt(t0),data:JSON.parse(JSON.stringify(D))};lsWrite(SNAPK,snap);await idbWrite('snapshot_pre_v2',snap);
+  X.migrated=true;X.itemsBefore=D.items.length;ev('safety-copy-made',{items:D.items.length});
+  const want=['Test item 1','Test item 2','Test item 3','Scanned 0052800482340'];const names=D.items.map(i=>i.name);
+  X.migration={expected:want.length,present:want.filter(w=>names.includes(w)).length}}
+ X.snapExists=!!(lsRead(SNAPK)||await idbRead('snapshot_pre_v2'));
+ // did saved data survive since the last open?
+ const prev=D.lastSaved,cur={count:D.items.length,hash:itemsHash(D.items)};
+ if(D.lossReported)X.survival='FAIL';
+ else if(prev)X.survival=(prev.count===cur.count&&prev.hash===cur.hash)?'PASS':'FAIL';
+ else if(X.migrated&&X.migration&&X.migration.present===X.migration.expected)X.survival='PASS';
+ else X.survival='NT';
+ const prevOpen=D.lastOpenTs;X.gapMs=prevOpen?t0-prevOpen:null;
+ if(X.gapMs!=null&&X.survival==='PASS')D.maxGapDays=Math.max(D.maxGapDays||0,X.gapMs/864e5);
+ if(X.survival==='FAIL')ev('SURVIVAL-FAIL',{prev,cur});
+ D.launches=(D.launches||0)+1;D.launchLog.push((standalone?'HOME SCREEN ':'SAFARI ')+fmt(t0));D.launchLog=D.launchLog.slice(-8);
+ D.opens=(D.opens||[]).concat([{t:t0,mode:standalone?'home':'safari'}]).slice(-30);D.lastOpenTs=t0;D.ver=2;D.verTag=VER;
+ ev('open',{mode:standalone?'home':'safari',gapMin:X.gapMs==null?null:Math.round(X.gapMs/60000),survival:X.survival});
+ try{const was=await navigator.storage.persisted();let res=was;if(!was&&navigator.storage.persist)res=await navigator.storage.persist();D.persist={was,res,t:t0}}catch(e){D.persist={err:String(e)}}
+ try{const e=await navigator.storage.estimate();X.quotaMB=Math.round((e.quota||0)/1048576);X.usedKB=Math.round((e.usage||0)/1024)}catch(e){}
+ try{const p=await navigator.permissions.query({name:'camera'});X.camPerm=p.state}catch(e){X.camPerm='unknown'}
+ await saveAll();
+ await autoTests();render();cards()}
+// ---------- automatic checks ----------
+async function autoTests(){
+ const tok='probe'+Math.random().toString(36).slice(2);lsWrite('bagtest_probe',tok);await idbWrite('probe',tok);
+ X.probe=(lsRead('bagtest_probe')===tok)&&((await idbRead('probe'))===tok);
+ X.cons=consensusTests();
+ const rt=importMerge([],exportText(D.items));X.roundtrip=rt.ok&&itemsHash(rt.items)===itemsHash(D.items);
+ X.dec={loaded:typeof ZXing!=='undefined'};
+ if(X.dec.loaded){X.dec.ean13=await drawDecode('2000000000145');X.dec.upca=await drawDecode('012345678905')}
+ X.cam=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)}
+function eanBars(d){const L_=['0001101','0011001','0010011','0111101','0100011','0110001','0101111','0111011','0110111','0001011'],G=['0100111','0110011','0011011','0100001','0011101','0111001','0000101','0010001','0001001','0010111'],R_=['1110010','1100110','1101100','1000010','1011100','1001110','1010000','1000100','1001000','1110100'],P=['LLLLLL','LLGLGG','LLGGLG','LLGGGL','LGLLGG','LGGLLG','LGGGLL','LGLGLG','LGLGGL','LGGLGL'];
+ const f=+d[0];let s='101';for(let i=1;i<7;i++)s+=(P[f][i-1]==='L'?L_:G)[+d[i]];s+='01010';for(let i=7;i<13;i++)s+=R_[+d[i]];s+='101';
+ const out=[];let i=0;while(i<s.length){let j=i;while(j<s.length&&s[j]===s[i])j++;out.push({dark:s[i]==='1',w:j-i});i=j}return out}
+async function drawDecode(num){try{const c=document.createElement('canvas');c.width=460;c.height=260;const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,460,260);
+ const pat=eanBars(num.length===12?'0'+num:num);let x=30;g.fillStyle='#000';for(const b of pat){if(b.dark)g.fillRect(x,20,b.w*3,180);x+=b.w*3}
+ const r=await new ZXing.BrowserMultiFormatReader().decodeFromImageUrl(c.toDataURL());return gtin(r.getText()).n===gtin(num).n}catch(e){return false}}
+function rows(){const R=[];const add=(f,s,n)=>R.push({f,s,n:n||''});
+ add('Page is secure (https), needed for the camera',window.isSecureContext?'PASS':'FAIL',location.protocol);
+ add('Opened as a Home Screen app',standalone?'PASS':'NT',standalone?'':'Open the Home Screen icon to test this');
+ add('Saved data can be written and read back (both stores)',X.probe&&X.writeOK?'PASS':'FAIL','');
+ add('The two saved copies on the phone agree',X.agree===true?'PASS':(X.agree===false?'FAIL':'NT'),X.agree==null?'Only one copy was found at open':'');
+ if(X.migrated)add('Your earlier saved items survived the page update',X.migration&&X.migration.present===X.migration.expected?'PASS':'FAIL',(X.migration?X.migration.present:0)+' of '+(X.migration?X.migration.expected:4)+' expected items found');
+ add('A safety copy of the earlier data exists',X.snapExists?'PASS':'NT','');
+ add('Saved data survived closing and reopening',X.survival==='PASS'?'PASS':(X.survival==='FAIL'?'FAIL':'NT'),X.survival==='NT'?'Baseline set. Open again to test':(D.lossReported?'You reported missing data':''));
+ const last=D.restartEvidence.length?D.restartEvidence[D.restartEvidence.length-1]:null;
+ add('Saved data survived a phone restart',last?(last.survival==='PASS'?'PASS':'FAIL'):'NT',last?('You said you restarted at '+last.at):'Answer the restart question the next time you restart');
+ const md=D.maxGapDays||0;add('Saved data survived 7+ days unused',md>=7?'PASS':'NT',md>=7?md.toFixed(1)+' days':'Longest gap so far '+md.toFixed(2)+' days');
+ add('Phone granted protected ("persistent") storage',D.persist&&D.persist.res===true?'PASS':'FAIL',D.persist&&D.persist.res===true?'':'Not granted. Backups are the protection');
+ add('Plenty of storage space',X.quotaMB>=50?'PASS':'NT',X.quotaMB?X.quotaMB+' MB allowed':'');
+ add('Camera is available',X.cam?'PASS':'FAIL',X.camPerm?'permission: '+X.camPerm:'');
+ add('Barcode reader loaded',X.dec&&X.dec.loaded?'PASS':'FAIL','');
+ add('Reads a generated EAN-13 barcode (self-test)',X.dec&&X.dec.ean13?'PASS':(X.dec&&X.dec.loaded?'FAIL':'NT'),'');
+ add('Reads a generated UPC-A barcode (self-test)',X.dec&&X.dec.upca?'PASS':(X.dec&&X.dec.loaded?'FAIL':'NT'),'');
+ const cf=(X.cons||[]).filter(t=>!t.ok).length;add('Misread guard rules (6 automatic cases)',cf===0?'PASS':'FAIL',cf?cf+' case(s) failed':'');
+ const acc=(D.events||[]).some(e=>e.type==='scan-confirmed');add('Camera scan accepted and confirmed on this phone',acc?'PASS':'NT',acc?'':'Scan one product to test');
+ const rej=(D.events||[]).filter(e=>e.type==='rejected-read').length;if(rej)add('Wrong reads blocked by the guard',  'PASS',rej+' wrong read(s) were blocked, not saved');
+ add('Backup text round trip (export, then restore)',X.roundtrip?'PASS':'FAIL','');
+ add('Message when camera permission is denied',(D.events||[]).some(e=>e.type==='camera-denied')?'PASS':'NT','Only shown if permission is refused');
+ return R}
+function render(){const R=rows();X.rows=R;
+ $('sum').innerHTML=R.map(r=>'<tr><td>'+r.f+(r.n?'<div class="small">'+r.n+'</div>':'')+'</td><td class="'+r.s+'">'+(r.s==='NT'?'NOT TESTED':r.s)+'</td></tr>').join('');
+ $('bag').textContent=D.items.length?D.items.map((i,n)=>(n+1)+'. '+i.name+'  ['+i.at+']').join('\n'):'No items yet.'}
+function cards(){const c=$('cards');c.innerHTML='';
+ const needRestart=(X.gapMs==null||X.gapMs>120000)&&!X.fresh&&!D.flags['asked'+D.launches];
+ if(X.fresh&&!D.flags['fresh'+D.launches]){const d=document.createElement('div');d.className='card';d.innerHTML='<b>Nothing was saved here before.</b> Is this the first time you have opened this icon?<br><button id="f1">Yes, first time</button><button id="f2">No, I saved items here before</button>';c.appendChild(d);
+  $('f1').onclick=async()=>{D.flags['fresh'+D.launches]=1;ev('fresh-confirmed-first-time');await saveAll();cards()};
+  $('f2').onclick=async()=>{D.flags['fresh'+D.launches]=1;D.lossReported=true;ev('DATA-LOSS-REPORTED');X.survival='FAIL';await saveAll();render();cards()}}
+ if(needRestart){const d=document.createElement('div');d.className='card';d.innerHTML='<b>One quick question:</b> have you restarted your phone since the last time you opened this?<br><button id="r1">Yes, I restarted it</button><button id="r2">No</button><button id="r3">Not sure</button>';c.appendChild(d);
+  const ans=async a=>{D.flags['asked'+D.launches]=1;if(a==='yes')D.restartEvidence.push({at:fmt(now()),survival:X.survival,gapMin:X.gapMs==null?null:Math.round(X.gapMs/60000)});ev('restart-answer',a);await saveAll();render();cards()};
+  $('r1').onclick=()=>ans('yes');$('r2').onclick=()=>ans('no');$('r3').onclick=()=>ans('unsure')}}
+// ---------- report ----------
+function buildReport(){const R=rows();const L=['BELLA INES BAG TEST REPORT ('+VER+')','Made: '+fmt(now()),'Opened from: '+(standalone?'HOME SCREEN':'SAFARI')+'   Opens: '+D.launches+'   First seen: '+D.firstSeen,'','SUMMARY'];
+ R.forEach(r=>L.push((r.s==='NT'?'NOT TESTED':r.s)+'  |  '+r.f+(r.n?'  ('+r.n+')':'')));
+ L.push('','DETAILS (for the technical lead)');
+ L.push(JSON.stringify({ver:VER,ua:navigator.userAgent,standalone,secure:window.isSecureContext,origin:location.origin,items:D.items.length,itemsHash:itemsHash(D.items),lsHad:X.lsHad,idbHad:X.idbHad,agree:X.agree,migrated:X.migrated,migration:X.migration||null,survival:X.survival,gapMin:X.gapMs==null?null:Math.round(X.gapMs/60000),maxGapDays:D.maxGapDays||0,persist:D.persist,quotaMB:X.quotaMB,usedKB:X.usedKB,camPerm:X.camPerm,decoder:X.dec,consensus:X.cons,restartEvidence:D.restartEvidence,lossReported:!!D.lossReported,launchLog:D.launchLog,reads:session.seen,events:(D.events||[]).slice(-60)},null,1));
+ return L.join('\n')}
+async function copyReport(){await autoTests();render();const t=buildReport();$('rep').value=t;ev('report-copied');await saveAll();
+ try{await navigator.clipboard.writeText(t);$('copymsg').textContent='Copied. Now paste it into the chat.'}catch(e){$('rep').removeAttribute('readonly');$('rep').focus();$('rep').select();try{document.execCommand('copy');$('copymsg').textContent='Copied. Now paste it into the chat.'}catch(e2){$('copymsg').textContent='Tap inside the box, choose Select All, then Copy.'}}}
+$('copy').onclick=copyReport;$('again').onclick=async()=>{await autoTests();render();$('copymsg').textContent='Checks run again.'};
+$('add').onclick=async()=>{D.items.push({name:'Test item '+(D.items.length+1),at:fmt(now())});ev('item-added',D.items.length);await saveAll();render()};
+// ---------- manual entry and backup ----------
+$('mgo').onclick=async()=>{const c=gtin($('man').value);if(!c.ok){$('mres').textContent='Not a valid barcode number (check digit failed): '+c.n;return}D.items.push({name:'Manual '+c.n,at:fmt(now())});ev('manual-added',c.n);await saveAll();render();$('mres').textContent='Saved '+c.n};
+$('bkfill').onclick=()=>{$('bk').value=exportText(D.items);$('bkres').textContent='Select all of this text and copy it to keep a backup.'};
+$('bkgo').onclick=async()=>{const r=importMerge(D.items,$('bk').value);if(!r.ok){$('bkres').textContent=r.err;return}D.items=r.items;ev('restore',{added:r.added});await saveAll();render();$('bkres').textContent='Restored. '+r.added+' item(s) added. Nothing was removed.'};
+// ---------- scanner with misread guard ----------
+let stream=null,timer=null,busy=false,cons=makeConsensus();
 function stopCam(){clearInterval(timer);timer=null;if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}const v=$('v');v.srcObject=null;v.style.display='none';$('camres').textContent+='\nCamera stopped.'}
 $('stop').onclick=stopCam;addEventListener('pagehide',()=>{if(stream)stopCam()});document.addEventListener('visibilitychange',()=>{if(document.hidden&&stream)stopCam()});
-$('cam').onclick=async()=>{const o=$('camres');o.textContent='';
+$('cam').onclick=async()=>{const o=$('camres');o.textContent='';cons.reset();
  if(!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia)){o.textContent='Camera not available here.';return}
  try{o.textContent='Asking for camera permission...';
   stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1280},height:{ideal:720}}});
-  const tr=stream.getVideoTracks()[0];
-  try{const c=tr.getCapabilities?tr.getCapabilities():{};if(c.focusMode&&c.focusMode.includes('continuous'))await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
+  const tr=stream.getVideoTracks()[0];try{const c=tr.getCapabilities?tr.getCapabilities():{};if(c.focusMode&&c.focusMode.includes('continuous'))await tr.applyConstraints({advanced:[{focusMode:'continuous'}]})}catch(e){}
   o.textContent='Permission: GRANTED\nCamera: '+tr.label;
   const v=$('v');v.srcObject=stream;v.style.display='block';await v.play();await new Promise(r=>{if(v.videoWidth)r();else v.onloadedmetadata=r});startDetect(v);
- }catch(e){const n=e&&e.name;o.textContent=n==='NotAllowedError'?'Camera permission was DENIED. Go to iPhone Settings > Apps > Safari > Camera (or for the Home Screen app, Settings > Apps > the app name) and allow it. You can still type the barcode.':n==='NotFoundError'?'No camera found.':n==='NotReadableError'?'Camera is busy in another app.':'Camera error: '+e}};
-async function addCode(txt,fmt){const now=Date.now();if(txt===last.code&&now-last.t<4000){last.t=now;return}last={code:txt,t:now};
- const c=digitsOK(txt);if(navigator.vibrate)navigator.vibrate(60);$('det').textContent='READ: '+txt+' ('+fmt+') check digit '+(c.ok?'valid':'NOT valid')+(c.ok?'\nSaved to the bag.':'');if(c.ok)await addItem('Scanned '+c.n)}
+ }catch(e){const n=e&&e.name;if(n==='NotAllowedError'){ev('camera-denied');saveAll();render()}
+  o.textContent=n==='NotAllowedError'?'Camera permission was DENIED. Go to iPhone Settings > Apps > Safari > Camera (or for the Home Screen app, Settings > Apps > the app name) and allow it. You can still type the barcode.':n==='NotFoundError'?'No camera found.':n==='NotReadableError'?'Camera is busy in another app.':'Camera error: '+e}};
+function showReads(){const k=Object.entries(session.seen).sort((a,b)=>b[1].n-a[1].n);$('reads').textContent=k.length?'Numbers seen this session:\n'+k.map(([c,v])=>c+'  x'+v.n+'  '+v.status).join('\n'):''}
+function onRead(txt){const g=gtin(txt);const s=session.seen[g.n]||(session.seen[g.n]={n:0,status:''});s.n++;
+ if(!g.ok){s.status='ignored (check digit wrong)';showReads();return}
+ if(session.accepted===g.n&&!session.awaitingDifferent){return}
+ const r=cons.push(g.n,now());
+ if(r.state==='accept'){s.status='accepted';cons.reset();showAccept(r)}
+ else if(r.state==='unclear'){$('det').textContent='Unclear. Hold the phone steady and closer to one barcode.';s.status='waiting'}
+ else{$('det').textContent='Reading... '+r.code+' seen '+r.n+' of '+NEED+' times';s.status='waiting'}
+ showReads()}
+function showAccept(r){const code=r.code;stopCam();
+ Object.entries(session.seen).forEach(([c,v])=>{if(c!==code&&v.n<NEED&&v.status!=='accepted'){v.status='blocked (seen only '+v.n+'x)';ev('rejected-read',{code:c,times:v.n,instead:code})}});showReads();
+ $('det').textContent='Found '+code+' (read '+r.n+' times).';
+ $('confirm').innerHTML='<div class="card"><b>Is this the right number?</b><br><span style="font-size:20px">'+code+'</span><br>Compare it with the number printed under the barcode.<br><button id="cy">Yes, save it</button><button id="cn">No, scan again</button></div>';
+ $('cy').onclick=async()=>{D.items.push({name:'Scanned '+code,at:fmt(now())});ev('scan-confirmed',code);session.accepted=code;await saveAll();render();$('confirm').innerHTML='';$('det').textContent='Saved '+code+'.'};
+ $('cn').onclick=()=>{ev('scan-rejected-by-user',code);$('confirm').innerHTML='';$('det').textContent='Not saved. Tap Start camera to scan again.'}}
 function startDetect(v){
  if(typeof ZXing==='undefined'){$('det').textContent='Decoder did not load (needs internet).';return}
- const hints=new Map();hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.EAN_8,ZXing.BarcodeFormat.UPC_E]);hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
+ const hints=new Map();hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS,[ZXing.BarcodeFormat.EAN_13,ZXing.BarcodeFormat.UPC_A,ZXing.BarcodeFormat.EAN_8]);hints.set(ZXing.DecodeHintType.TRY_HARDER,true);
  const mr=new ZXing.MultiFormatReader();mr.setHints(hints);const cv=document.createElement('canvas');const g=cv.getContext('2d',{willReadFrequently:true});
  $('det').textContent='Looking for a barcode...';
  timer=setInterval(()=>{if(busy||!v.videoWidth)return;busy=true;try{const sc=Math.min(1,1000/v.videoWidth);cv.width=Math.round(v.videoWidth*sc);cv.height=Math.round(v.videoHeight*sc);g.drawImage(v,0,0,cv.width,cv.height);
-  const bm=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(cv)));const r=mr.decode(bm);addCode(r.getText(),ZXing.BarcodeFormat[r.getBarcodeFormat()])}catch(e){}busy=false},220)}
-boot();
+  const bm=new ZXing.BinaryBitmap(new ZXing.HybridBinarizer(new ZXing.HTMLCanvasElementLuminanceSource(cv)));const r=mr.decode(bm);onRead(r.getText())}catch(e){}busy=false},200)}
+window.BT={gtin,makeConsensus,consensusTests,importMerge,exportText,itemsHash,getD:()=>D,getX:()=>X,rows,buildReport,boot};
+if(!location.search.includes('noboot'))boot();
 </script></body></html>
